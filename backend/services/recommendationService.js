@@ -1,8 +1,463 @@
 const { Post } = require("../models/Posts");
 const UserEngagement = require("../models/UserEngagement");
 const User = require("../models/User");
+const TrendingKeyword = require("../models/TrendingKeyword");
+
+const CATEGORY_LABELS = {
+  politics: "Politics",
+  business: "Business",
+  entertainment: "Entertainment",
+  lifestyle: "Lifestyle",
+  technology: "Technology",
+};
+
+const KEYWORD_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_KEYWORD_BOOST = 100;
+
+const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 class RecommendationService {
+  constructor() {
+    this._keywordCache = { keywords: [], lastFetched: 0 };
+  }
+
+  // Force the next keyword cache read to refetch from the DB
+  invalidateKeywordCache() {
+    this._keywordCache.lastFetched = 0;
+  }
+
+  // Refresh the in-memory admin trending-keyword cache if it's stale
+  async ensureKeywordCache() {
+    const isStale =
+      Date.now() - this._keywordCache.lastFetched > KEYWORD_CACHE_TTL_MS;
+    if (!isStale) return;
+
+    try {
+      const rawKeywords = await TrendingKeyword.find({ isActive: true })
+        .select("word boost createdAt")
+        .lean();
+
+      // Compile each word into a whole-word-boundary regex once per cache
+      // refresh, so "cat" doesn't match inside "category"/"concatenate".
+      const keywords = rawKeywords.map(({ word, boost, createdAt }) => ({
+        word,
+        boost,
+        createdAt,
+        regex: new RegExp(`\\b${escapeRegExp(word)}\\b`, "i"),
+      }));
+
+      this._keywordCache = { keywords, lastFetched: Date.now() };
+    } catch (error) {
+      console.error("Error refreshing trending keyword cache:", error);
+    }
+  }
+
+  // Build the searchable text blob (title + content + tags) used both for
+  // keyword-boost scoring and for matching posts to a keyword topic.
+  buildKeywordHaystack(post) {
+    return [post.title, post.content, ...(post.tags || [])]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  // Sum admin-configured boosts for keywords found in a post's title/content/tags
+  getKeywordBoost(post) {
+    const keywords = this._keywordCache.keywords;
+    if (!keywords || keywords.length === 0) return 0;
+
+    const haystack = this.buildKeywordHaystack(post);
+
+    if (!haystack) return 0;
+
+    let totalBoost = 0;
+    for (const { regex, boost } of keywords) {
+      if (regex && regex.test(haystack)) {
+        totalBoost += boost || 0;
+      }
+    }
+
+    return Math.min(totalBoost, MAX_KEYWORD_BOOST);
+  }
+
+  toTopicKey(value) {
+    return (value || "")
+      .toString()
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/\s/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+  }
+
+  toTopicLabel(value) {
+    return (value || "")
+      .toString()
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  normalizeTag(tag) {
+    if (!tag) return "";
+
+    return tag.toString().replace(/^#+/, "").trim().replace(/\s+/g, " ");
+  }
+
+  getPostCommentCount(post) {
+    if (typeof post.commentCount === "number") {
+      return post.commentCount;
+    }
+
+    if (Array.isArray(post.comments)) {
+      return post.comments.length;
+    }
+
+    return 0;
+  }
+
+  getPostRankScore(post) {
+    const now = Date.now();
+    const ageHours =
+      (now - new Date(post.createdAt).getTime()) / (1000 * 60 * 60) || 0;
+    const freshnessBonus = Math.exp(-Math.max(ageHours, 0) / 72) * 30;
+    const commentCount = this.getPostCommentCount(post);
+    const engagementScore = (post.likes || 0) * 2 + commentCount * 3;
+    const keywordBoost = this.getKeywordBoost(post);
+
+    if (post.isExternal) {
+      return (
+        Math.round(
+          (40 + freshnessBonus + engagementScore * 0.3 + keywordBoost) * 100,
+        ) / 100
+      );
+    }
+
+    // baseTrending (whether cached on the post or computed fresh via
+    // calculateTrendingScore) already includes the keyword boost, so it's
+    // not added again here — only for the isExternal branch above, which
+    // never goes through calculateTrendingScore.
+    const baseTrending =
+      typeof post.trendingScore === "number" && post.trendingScore > 0
+        ? post.trendingScore
+        : this.calculateTrendingScore({
+            ...post,
+            comments: post.comments || [],
+          });
+
+    return (
+      Math.round((baseTrending + freshnessBonus + engagementScore) * 100) / 100
+    );
+  }
+
+  extractTopicCandidates(post) {
+    const candidates = [];
+    const seen = new Set();
+
+    const addCandidate = (type, rawValue, label, weight = 1) => {
+      if (!label) return;
+      const normalizedLabel = label.toString().trim().replace(/\s+/g, " ");
+      if (!normalizedLabel) return;
+
+      const normalizedValue = this.toTopicKey(rawValue);
+      if (!normalizedValue || normalizedValue.length < 3) return;
+
+      const key = `${type}__${normalizedValue}`;
+      if (!key || key.length < 3 || seen.has(key)) return;
+
+      seen.add(key);
+      candidates.push({
+        key,
+        label: this.toTopicLabel(normalizedLabel),
+        type,
+        matchValue: normalizedValue,
+        weight,
+      });
+    };
+
+    if (post.category) {
+      addCandidate(
+        "category",
+        post.category,
+        CATEGORY_LABELS[post.category] || post.category,
+        1.2,
+      );
+    }
+
+    if (Array.isArray(post.tags)) {
+      post.tags
+        .map((tag) => this.normalizeTag(tag))
+        .filter((tag) => tag && tag.length >= 3 && tag.length <= 40)
+        .slice(0, 5)
+        .forEach((tag) => addCandidate("tag", tag, tag, 1.8));
+    }
+
+    return candidates;
+  }
+
+  async getTrendingTopicCandidates() {
+    await this.ensureKeywordCache();
+
+    const now = Date.now();
+    const windowStart = new Date(now - 7 * 24 * 60 * 60 * 1000);
+
+    const posts = await Post.find({
+      status: "published",
+      moderationStatus: { $in: ["approved", "pending_review"] },
+      createdAt: { $gte: windowStart },
+    })
+      .populate("author", "firstName lastName username profileImage isVerified")
+      .sort({ trendingScore: -1, createdAt: -1 })
+      .limit(300)
+      .lean();
+
+    const scoredPosts = posts
+      .map((post) => ({
+        ...post,
+        _topicRankScore: this.getPostRankScore(post),
+      }))
+      .sort((a, b) => b._topicRankScore - a._topicRankScore);
+
+    return scoredPosts;
+  }
+
+  // Build one guaranteed trending-topic entry per active admin keyword,
+  // matched against the same candidate pool used for category/tag topics.
+  buildKeywordTopics(candidatePosts, previewPostsPerTopic) {
+    const keywordSlugSeen = new Set();
+    const keywordTopics = [];
+
+    for (const kw of this._keywordCache.keywords) {
+      const slug = this.toTopicKey(kw.word);
+      if (!slug || keywordSlugSeen.has(slug)) {
+        if (slug && keywordSlugSeen.has(slug)) {
+          console.warn(
+            `Trending keyword "${kw.word}" slugifies to an already-used ` +
+              `topic key ("keyword__${slug}") and will be skipped as a ` +
+              `duplicate trending topic.`,
+          );
+        }
+        continue;
+      }
+      keywordSlugSeen.add(slug);
+
+      // candidatePosts is already sorted desc by _topicRankScore, so
+      // matchedPosts preserves that order — previewPosts = first N is
+      // already "top N by rank score", no re-sort needed.
+      const matchedPosts = candidatePosts.filter((post) =>
+        kw.regex.test(this.buildKeywordHaystack(post)),
+      );
+
+      const topicScore =
+        Math.round(
+          matchedPosts.reduce((sum, p) => sum + p._topicRankScore, 0) * 100,
+        ) / 100;
+
+      const latestPostAt =
+        matchedPosts.length > 0
+          ? matchedPosts.reduce(
+              (latest, p) =>
+                new Date(p.createdAt) > new Date(latest)
+                  ? p.createdAt
+                  : latest,
+              matchedPosts[0].createdAt,
+            )
+          : kw.createdAt || new Date(0);
+
+      keywordTopics.push({
+        topicKey: `keyword__${slug}`,
+        label: this.toTopicLabel(kw.word),
+        topicType: "keyword",
+        matchValue: slug,
+        topicScore,
+        postCount: matchedPosts.length,
+        latestPostAt,
+        previewPosts: matchedPosts.slice(0, previewPostsPerTopic),
+      });
+    }
+
+    // Order keyword chips amongst themselves: strongest matches first,
+    // then most recent, then alphabetical as a deterministic tiebreak.
+    // 0-match keywords naturally sort last (still visible per product
+    // decision — admin keywords always show while active).
+    keywordTopics.sort((a, b) => {
+      if (b.topicScore !== a.topicScore) return b.topicScore - a.topicScore;
+      const dateDiff = new Date(b.latestPostAt) - new Date(a.latestPostAt);
+      if (dateDiff !== 0) return dateDiff;
+      return a.label.localeCompare(b.label);
+    });
+
+    return keywordTopics;
+  }
+
+  async getTrendingTopics(limit = 6, previewPostsPerTopic = 2) {
+    const candidatePosts = await this.getTrendingTopicCandidates();
+    const topicsMap = new Map();
+
+    for (const post of candidatePosts) {
+      const candidates = this.extractTopicCandidates(post);
+      if (candidates.length === 0) continue;
+
+      // Assign one primary topic per post to reduce overlap across topic buckets.
+      const primaryCandidate = candidates.sort(
+        (a, b) => b.weight - a.weight,
+      )[0];
+      if (!primaryCandidate) continue;
+
+      const existing = topicsMap.get(primaryCandidate.key) || {
+        topicKey: primaryCandidate.key,
+        label: primaryCandidate.label,
+        topicType: primaryCandidate.type,
+        matchValue: primaryCandidate.matchValue,
+        topicScore: 0,
+        postCount: 0,
+        latestPostAt: post.createdAt,
+        previewPosts: [],
+        _seenPostIds: new Set(),
+      };
+
+      const weightedScore = post._topicRankScore * primaryCandidate.weight;
+      existing.topicScore += weightedScore;
+      existing.latestPostAt =
+        new Date(existing.latestPostAt) > new Date(post.createdAt)
+          ? existing.latestPostAt
+          : post.createdAt;
+
+      if (!existing._seenPostIds.has(String(post._id))) {
+        existing._seenPostIds.add(String(post._id));
+        existing.postCount += 1;
+
+        if (existing.previewPosts.length < previewPostsPerTopic) {
+          existing.previewPosts.push(post);
+        }
+      }
+
+      topicsMap.set(primaryCandidate.key, existing);
+    }
+
+    const rawTopics = Array.from(topicsMap.values())
+      .map((topic) => ({
+        topicKey: topic.topicKey,
+        label: topic.label,
+        topicType: topic.topicType,
+        matchValue: topic.matchValue,
+        topicScore: Math.round(topic.topicScore * 100) / 100,
+        postCount: topic.postCount,
+        latestPostAt: topic.latestPostAt,
+        previewPosts: topic.previewPosts,
+      }))
+      .filter((topic) => topic.postCount > 0)
+      .sort((a, b) => {
+        if (b.topicScore !== a.topicScore) return b.topicScore - a.topicScore;
+        return new Date(b.latestPostAt) - new Date(a.latestPostAt);
+      });
+
+    // Admin-curated keywords get guaranteed slots alongside the computed
+    // category/tag topics above. If a keyword's slug collides with an
+    // existing computed topic, the keyword wins — drop the computed
+    // duplicate rather than showing two identical-looking chips.
+    const keywordTopics = this.buildKeywordTopics(
+      candidatePosts,
+      previewPostsPerTopic,
+    );
+    const keywordSlugs = new Set(keywordTopics.map((t) => t.matchValue));
+    const rawTopicsDeduped = rawTopics.filter(
+      (topic) => !keywordSlugs.has(topic.matchValue),
+    );
+
+    const professionalTopics =
+      rawTopicsDeduped.filter((topic) => topic.postCount >= 2).length > 0
+        ? rawTopicsDeduped.filter((topic) => topic.postCount >= 2)
+        : rawTopicsDeduped;
+
+    // Keyword topics are never truncated; computed topics fill only the
+    // remaining non-negative slots up to `limit`.
+    const remainingSlots = Math.max(0, limit - keywordTopics.length);
+    const computedTopics =
+      keywordTopics.length > 0
+        ? professionalTopics.slice(0, remainingSlots)
+        : professionalTopics.slice(0, Math.max(1, limit));
+
+    const topics = [...keywordTopics, ...computedTopics];
+
+    return {
+      topics,
+      meta: {
+        totalTopics: topics.length,
+        generatedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  async getTrendingPostsByTopic(topicKey, page = 1, limit = 10) {
+    const normalizedKey = (topicKey || "").toString().trim().toLowerCase();
+    if (!normalizedKey) {
+      throw new Error("Invalid topic key");
+    }
+
+    const candidatePosts = await this.getTrendingTopicCandidates();
+    let matchedPosts = [];
+
+    if (normalizedKey.startsWith("category__")) {
+      const categoryValue = normalizedKey.replace("category__", "");
+      matchedPosts = candidatePosts.filter(
+        (post) => this.toTopicKey(post.category) === categoryValue,
+      );
+    } else if (normalizedKey.startsWith("tag__")) {
+      const tagValue = normalizedKey.replace("tag__", "");
+      matchedPosts = candidatePosts.filter((post) => {
+        if (!Array.isArray(post.tags) || post.tags.length === 0) return false;
+
+        return post.tags.some(
+          (tag) => this.toTopicKey(this.normalizeTag(tag)) === tagValue,
+        );
+      });
+    } else if (normalizedKey.startsWith("keyword__")) {
+      const keywordSlug = normalizedKey.replace("keyword__", "");
+      const keyword = this._keywordCache.keywords.find(
+        (kw) => this.toTopicKey(kw.word) === keywordSlug,
+      );
+
+      // Keyword may have been deleted/deactivated since the chip was
+      // rendered (or fallen out of the cache TTL) — degrade to an empty
+      // result instead of throwing.
+      matchedPosts = keyword
+        ? candidatePosts.filter((post) =>
+            keyword.regex.test(this.buildKeywordHaystack(post)),
+          )
+        : [];
+    } else {
+      // Backward-compatible fallback for older keys
+      matchedPosts = candidatePosts.filter((post) => {
+        const candidates = this.extractTopicCandidates(post);
+        return candidates.some(
+          (candidate) =>
+            candidate.key === normalizedKey ||
+            candidate.matchValue === normalizedKey ||
+            this.toTopicKey(candidate.label) === normalizedKey,
+        );
+      });
+    }
+
+    const skip = (page - 1) * limit;
+    const paginatedPosts = matchedPosts.slice(skip, skip + limit);
+
+    return {
+      topicKey: normalizedKey,
+      posts: paginatedPosts,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(matchedPosts.length / limit) || 1,
+        totalPosts: matchedPosts.length,
+        hasNext: skip + limit < matchedPosts.length,
+        hasPrev: page > 1,
+      },
+    };
+  }
+
   /**
    * Calculate personalization score for a post based on user engagement
    */
@@ -18,7 +473,7 @@ class RecommendationService {
     if (post.category && userEngagement) {
       const categoryScore = await UserEngagement.getCategoryScore(
         user._id,
-        post.category
+        post.category,
       );
       score += categoryScore * 5;
     }
@@ -38,11 +493,11 @@ class RecommendationService {
       const hasInteractedWithAuthor =
         userEngagement.likedPosts.some(
           (lp) =>
-            lp.post && post.author.toString() === lp.post.author?.toString()
+            lp.post && post.author.toString() === lp.post.author?.toString(),
         ) ||
         userEngagement.commentedPosts.some(
           (cp) =>
-            cp.post && post.author.toString() === cp.post.author?.toString()
+            cp.post && post.author.toString() === cp.post.author?.toString(),
         );
 
       if (hasInteractedWithAuthor) {
@@ -85,7 +540,7 @@ class RecommendationService {
       const posts = await Post.find(filter)
         .populate(
           "author",
-          "firstName lastName username profileImage isVerified"
+          "firstName lastName username profileImage isVerified",
         )
         .lean();
 
@@ -95,10 +550,10 @@ class RecommendationService {
           const score = await this.calculatePostScore(
             post,
             user,
-            userEngagement
+            userEngagement,
           );
           return { ...post, personalizedScore: score };
-        })
+        }),
       );
 
       // Sort by personalized score
@@ -150,11 +605,15 @@ class RecommendationService {
         }).length
       : 0;
 
+    // Admin-curated trending word boost
+    const keywordBoost = this.getKeywordBoost(post);
+
     // Trending score formula
     const trendingScore =
       engagementVelocity * 100 +
       recentLikes * 5 +
       post.comments.length * 10 +
+      keywordBoost +
       timeDecay * 50;
 
     return Math.round(trendingScore * 100) / 100; // Round to 2 decimals
@@ -166,6 +625,8 @@ class RecommendationService {
   async updateTrendingScores() {
     try {
       console.log("🔥 Updating trending scores...");
+
+      await this.ensureKeywordCache();
 
       // Get posts from last 7 days
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -218,7 +679,7 @@ class RecommendationService {
       const posts = await Post.find(filter)
         .populate(
           "author",
-          "firstName lastName username profileImage isVerified"
+          "firstName lastName username profileImage isVerified",
         )
         .sort({ trendingScore: -1, createdAt: -1 })
         .skip(skip)
@@ -261,7 +722,7 @@ class RecommendationService {
       })
         .populate(
           "author",
-          "firstName lastName username profileImage isVerified"
+          "firstName lastName username profileImage isVerified",
         )
         .sort({ createdAt: -1 })
         .limit(limit)

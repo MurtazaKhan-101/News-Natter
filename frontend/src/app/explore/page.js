@@ -15,7 +15,6 @@ const CATEGORIES = [
   { id: "entertainment", label: "Entertainment" },
   { id: "lifestyle", label: "Lifestyle" },
   { id: "technology", label: "Science & Tech" },
-  { id: "community", label: "Community" },
 ];
 
 export default function ExplorePage() {
@@ -116,7 +115,7 @@ export default function ExplorePage() {
         {/* Page Header */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-            Explore
+            News Hub
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
             Discover stories and trending news from around the world

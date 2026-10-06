@@ -35,6 +35,10 @@ export const PostFeed = ({
         params.category = category;
       }
 
+      if (feedType === "latest") {
+        params.excludeExternal = true;
+      }
+
       switch (feedType) {
         case "personalized":
           response = await feedService.getPersonalizedFeed(params);

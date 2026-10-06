@@ -50,10 +50,10 @@ const Topbar = ({ setIsMobileOpen }) => {
               <h1 className="text-lg sm:text-xl lg:text-2xl font-bold bg-clip-text text-bg-buttons-gradient cursor-pointer hover:opacity-80 transition-opacity">
                 {/* <span className="hidden sm:inline">newsnatter</span> */}
                 <Image
-                  src="/images/NEWS_NET-V2.svg"
+                  src="/images/logo.svg"
                   alt="newsnatter Logo"
-                  width={150}
-                  height={150}
+                  width={55}
+                  height={55}
                   className="hidden sm:inline"
                 />
               </h1>

@@ -6,6 +6,7 @@ const path = require("path");
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const crypto = require("crypto");
 const linkPreviewService = require("../utils/linkPreview");
+const recommendationService = require("../services/recommendationService");
 
 // Configure Cloudflare R2
 const r2Client = new S3Client({
@@ -62,7 +63,7 @@ class PostController {
         comment.replies = await this.populateCommentsRecursively(
           comment.replies,
           depth + 1,
-          maxDepth
+          maxDepth,
         );
       }
     }
@@ -151,7 +152,7 @@ class PostController {
         if (!linkTitle || !linkDescription) {
           try {
             const preview = await linkPreviewService.generateLinkPreview(
-              linkUrl.trim()
+              linkUrl.trim(),
             );
             if (preview.success) {
               postData.linkTitle = linkTitle?.trim() || preview.data.title;
@@ -183,7 +184,7 @@ class PostController {
       // Populate author info
       await newPost.populate(
         "author",
-        "firstName lastName username profileImage isVerified"
+        "firstName lastName username profileImage isVerified",
       );
 
       res.status(201).json({
@@ -221,8 +222,8 @@ class PostController {
         const mediaType = file.mimetype.startsWith("image/")
           ? "image"
           : file.mimetype.startsWith("video/")
-          ? "video"
-          : "image";
+            ? "video"
+            : "image";
 
         // Upload to R2
         const uploadParams = {
@@ -315,7 +316,7 @@ class PostController {
       // Populate author info
       await newPost.populate(
         "author",
-        "firstName lastName username profileImage isVerified"
+        "firstName lastName username profileImage isVerified",
       );
 
       res.status(201).json({
@@ -364,6 +365,10 @@ class PostController {
         filter.tags = { $in: tagArray };
       }
 
+      if (req.query.excludeExternal === "true") {
+        filter.isExternal = false;
+      }
+
       // Sort options
       let sortOption = {};
       switch (req.query.sort) {
@@ -380,7 +385,7 @@ class PostController {
       const posts = await Post.find(filter)
         .populate(
           "author",
-          "firstName lastName username profileImage isVerified"
+          "firstName lastName username profileImage isVerified",
         )
         .populate({
           path: "comments",
@@ -424,7 +429,7 @@ class PostController {
       const post = await Post.findById(postId)
         .populate(
           "author",
-          "firstName lastName username profileImage isVerified"
+          "firstName lastName username profileImage isVerified",
         )
         .populate({
           path: "comments",
@@ -555,51 +560,21 @@ class PostController {
     }
   }
 
-  // Get trending posts (based on likes and comments in last 24 hours)
+  // Get trending posts (delegates to recommendationService so this stays
+  // consistent with /feed/trending, including admin trending-keyword boosts)
   async getTrendingPosts(req, res) {
     try {
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 10;
-      const skip = (page - 1) * limit;
+      const category = req.query.category;
 
-      // Get posts from last 24 hours
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const result = await recommendationService.getTrendingPosts(
+        page,
+        limit,
+        category,
+      );
 
-      const posts = await Post.find({
-        status: "published",
-        createdAt: { $gte: twentyFourHoursAgo },
-      })
-        .populate(
-          "author",
-          "firstName lastName username profileImage isVerified"
-        )
-        .populate(
-          "comments.user",
-          "firstName lastName username profileImage isVerified"
-        )
-        .sort({ likes: -1, commentCount: -1, createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean();
-
-      const totalPosts = await Post.countDocuments({
-        status: "published",
-        createdAt: { $gte: twentyFourHoursAgo },
-      });
-
-      const totalPages = Math.ceil(totalPosts / limit);
-
-      res.status(200).json({
-        success: true,
-        posts: posts,
-        pagination: {
-          currentPage: page,
-          totalPages: totalPages,
-          totalPosts: totalPosts,
-          hasNext: page < totalPages,
-          hasPrev: page > 1,
-        },
-      });
+      res.status(200).json({ success: true, ...result });
     } catch (error) {
       console.error("Error fetching trending posts:", error);
       res.status(500).json({
@@ -608,6 +583,62 @@ class PostController {
       });
     }
   }
+
+  // Original implementation, kept for reference (ranked by raw
+  // likes/commentCount/createdAt over 24h, no keyword-boost/trendingScore).
+  // Superseded above by delegating to recommendationService.getTrendingPosts.
+  // async getTrendingPosts(req, res) {
+  //   try {
+  //     const page = parseInt(req.query.page) || 1;
+  //     const limit = parseInt(req.query.limit) || 10;
+  //     const skip = (page - 1) * limit;
+  //
+  //     // Get posts from last 24 hours
+  //     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  //
+  //     const posts = await Post.find({
+  //       status: "published",
+  //       createdAt: { $gte: twentyFourHoursAgo },
+  //     })
+  //       .populate(
+  //         "author",
+  //         "firstName lastName username profileImage isVerified",
+  //       )
+  //       .populate(
+  //         "comments.user",
+  //         "firstName lastName username profileImage isVerified",
+  //       )
+  //       .sort({ likes: -1, commentCount: -1, createdAt: -1 })
+  //       .skip(skip)
+  //       .limit(limit)
+  //       .lean();
+  //
+  //     const totalPosts = await Post.countDocuments({
+  //       status: "published",
+  //       createdAt: { $gte: twentyFourHoursAgo },
+  //     });
+  //
+  //     const totalPages = Math.ceil(totalPosts / limit);
+  //
+  //     res.status(200).json({
+  //       success: true,
+  //       posts: posts,
+  //       pagination: {
+  //         currentPage: page,
+  //         totalPages: totalPages,
+  //         totalPosts: totalPosts,
+  //         hasNext: page < totalPages,
+  //         hasPrev: page > 1,
+  //       },
+  //     });
+  //   } catch (error) {
+  //     console.error("Error fetching trending posts:", error);
+  //     res.status(500).json({
+  //       success: false,
+  //       message: "Server error fetching trending posts",
+  //     });
+  //   }
+  // }
 
   // Search posts
   async searchPosts(req, res) {
@@ -645,11 +676,11 @@ class PostController {
       const posts = await Post.find(filter)
         .populate(
           "author",
-          "firstName lastName username profileImage isVerified"
+          "firstName lastName username profileImage isVerified",
         )
         .populate(
           "comments.user",
-          "firstName lastName username profileImage isVerified"
+          "firstName lastName username profileImage isVerified",
         )
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -776,7 +807,7 @@ class PostController {
           if (post.linkUrl !== linkUrl.trim()) {
             try {
               const preview = await linkPreviewService.generateLinkPreview(
-                linkUrl.trim()
+                linkUrl.trim(),
               );
               if (preview.success) {
                 post.linkTitle = preview.data.title;
@@ -822,7 +853,7 @@ class PostController {
       // Populate author info
       await post.populate(
         "author",
-        "firstName lastName username profileImage isVerified"
+        "firstName lastName username profileImage isVerified",
       );
 
       res.status(200).json({
