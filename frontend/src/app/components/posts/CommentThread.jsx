@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { postService, formatPostTime, formatNumber } from "../../lib/posts";
 import { Button } from "../ui";
+import { exceedsQuickTakeLimit } from "../../lib/quickTake";
 import { Pencil, Trash2, MoreHorizontal } from "lucide-react";
 
 export const CommentThread = ({
@@ -300,10 +301,12 @@ export const CommentThread = ({
                   <div className="mb-2">
                     <textarea
                       value={editText}
-                      onChange={(e) => setEditText(e.target.value)}
+                      onChange={(e) =>
+                  !exceedsQuickTakeLimit(e.target.value) &&
+                  setEditText(e.target.value)
+                }
                       className="w-full p-2 text-sm border border-gray-700 rounded resize-none bg-white text-black"
                       rows={2}
-                      maxLength={1000}
                       placeholder="Edit your message..."
                     />
                     <div className="flex justify-end gap-2 mt-2">
@@ -417,7 +420,10 @@ export const CommentThread = ({
                     <form onSubmit={handleReply} className="space-y-2">
                       <textarea
                         value={newReply}
-                        onChange={(e) => setNewReply(e.target.value)}
+                        onChange={(e) =>
+                  !exceedsQuickTakeLimit(e.target.value) &&
+                  setNewReply(e.target.value)
+                }
                         placeholder="Reply..."
                         className="w-full p-2 border border-gray-700 rounded text-sm resize-none bg-white text-black"
                         rows={2}
@@ -577,10 +583,12 @@ export const CommentThread = ({
             <div className="mb-3">
               <textarea
                 value={editText}
-                onChange={(e) => setEditText(e.target.value)}
+                onChange={(e) =>
+                  !exceedsQuickTakeLimit(e.target.value) &&
+                  setEditText(e.target.value)
+                }
                 className="w-full p-2 text-sm border border-gray-700 rounded resize-none bg-gray-800 text-white"
                 rows={3}
-                maxLength={1000}
                 placeholder="Edit your comment..."
               />
               <div className="flex justify-end gap-2 mt-2">
@@ -687,7 +695,10 @@ export const CommentThread = ({
             <form onSubmit={handleReply} className="mt-3">
               <textarea
                 value={newReply}
-                onChange={(e) => setNewReply(e.target.value)}
+                onChange={(e) =>
+                  !exceedsQuickTakeLimit(e.target.value) &&
+                  setNewReply(e.target.value)
+                }
                 placeholder="Write a reply..."
                 className="w-full p-2 text-sm border border-gray-700 rounded resize-none bg-gray-800 text-black"
                 rows={2}

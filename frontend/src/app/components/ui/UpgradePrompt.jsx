@@ -136,8 +136,6 @@ export const UpgradeBanner = ({ feature, compact = false }) => {
     switch (feature) {
       case "post":
         return "Upgrade to Premium to create posts";
-      case "comment":
-        return "Upgrade to Premium to add comments";
       case "chat":
         return "Upgrade to Premium to join chat rooms";
       default:

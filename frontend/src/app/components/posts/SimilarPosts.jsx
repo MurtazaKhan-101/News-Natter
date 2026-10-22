@@ -6,15 +6,19 @@ import { PostCard } from "../posts/PostCard";
 import { Spinner } from "../ui";
 import { Sparkles } from "lucide-react";
 
-export const SimilarPosts = ({ postId }) => {
-  const [posts, setPosts] = useState([]);
-  const [loading, setLoading] = useState(true);
+// initialPosts: optional preloaded list; when given, nothing is fetched here.
+export const SimilarPosts = ({ postId, initialPosts }) => {
+  const [posts, setPosts] = useState(initialPosts || []);
+  const [loading, setLoading] = useState(!initialPosts);
 
   useEffect(() => {
-    if (postId) {
+    if (initialPosts) {
+      setPosts(initialPosts);
+      setLoading(false);
+    } else if (postId) {
       fetchSimilarPosts();
     }
-  }, [postId]);
+  }, [postId, initialPosts]);
 
   const fetchSimilarPosts = async () => {
     try {

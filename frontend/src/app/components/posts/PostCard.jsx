@@ -332,12 +332,13 @@ export const PostCard = ({ post, onUpdate }) => {
               {formatNumber(likeCount)}
             </button>
 
-            {/* <button
+            <button
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                router.push(`/discussion/${post._id}`);
+                router.push(`/discussion/${post._id}?section=quick-takes`);
               }}
+              title="Quick Take"
               className="flex items-center gap-2 px-2 py-1 rounded-full text-sm hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400 transition-colors"
             >
               <svg
@@ -353,8 +354,8 @@ export const PostCard = ({ post, onUpdate }) => {
                   d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
                 />
               </svg>
-              {formatNumber(getTotalCommentCount(comments))}
-            </button> */}
+              Quick Take · {formatNumber(getTotalCommentCount(comments))}
+            </button>
 
             <button
               onClick={(e) => {

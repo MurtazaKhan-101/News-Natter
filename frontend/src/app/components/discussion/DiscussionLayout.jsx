@@ -7,13 +7,20 @@ import { DiscussionPanel } from "./DiscussionPanel";
 import { SimilarPosts } from "../posts/SimilarPosts";
 import { ChevronLeft } from "lucide-react";
 
-export const DiscussionLayout = ({ post, onPostUpdate }) => {
+export const DiscussionLayout = ({ post, similarPosts, onPostUpdate }) => {
   const router = useRouter();
   const [comments, setComments] = useState(post?.comments || []);
 
   useEffect(() => {
     setComments(post?.comments || []);
   }, [post?.comments]);
+
+  // Scroll to Quick Takes (mobile) only when arriving via the Quick Take button
+  useEffect(() => {
+    if (!post?._id) return;
+    if (new URLSearchParams(window.location.search).get("section") !== "quick-takes") return;
+    document.getElementById("quick-takes")?.scrollIntoView({ behavior: "smooth" });
+  }, [post?._id]);
 
   const handleCommentsUpdate = (updatedComments) => {
     setComments(updatedComments);
@@ -50,7 +57,7 @@ export const DiscussionLayout = ({ post, onPostUpdate }) => {
                 isDiscussionView={true}
               />
               {/* Similar Posts Section */}
-              <SimilarPosts postId={post._id} />
+              <SimilarPosts postId={post._id} initialPosts={similarPosts} />
             </div>
           </div>
 
@@ -73,20 +80,19 @@ export const DiscussionLayout = ({ post, onPostUpdate }) => {
               onUpdate={onPostUpdate}
               isDiscussionView={true}
             />
-            {/* Similar Posts Section */}
-            <SimilarPosts postId={post._id} />
+            {/* Similar Posts Section (preloaded, so it never shifts the layout) */}
+            <SimilarPosts postId={post._id} initialPosts={similarPosts} />
           </div>
 
           {/* Discussion panel below post */}
-          {/* Hidden per client request - discussion panel looked disconnected from the post */}
-          {/* <div className="border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1a1a1a] min-h-[60vh] w-full overflow-hidden">
+          <div id="quick-takes" className="border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1a1a1a] min-h-[60vh] w-full overflow-hidden">
             <DiscussionPanel
               post={post}
               comments={comments}
               onCommentsUpdate={handleCommentsUpdate}
               isMobile={true}
             />
-          </div> */}
+          </div>
         </div>
       </div>
     </div>

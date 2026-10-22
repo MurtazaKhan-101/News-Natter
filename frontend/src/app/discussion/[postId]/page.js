@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "../../context/AuthContext";
 import { postService } from "../../lib/posts";
+import { feedService } from "../../lib/engagement";
 import { Spinner, Button } from "../../components/ui";
 import { DiscussionLayout } from "../../components/discussion/DiscussionLayout";
 
@@ -12,6 +13,8 @@ export default function DiscussionPage() {
   const router = useRouter();
   const { isAuthenticated, loading } = useAuth();
   const [post, setPost] = useState(null);
+  // Preloaded with the post so Similar Posts can't pop in later and shift the layout
+  const [similarPosts, setSimilarPosts] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const postId = params.postId;
@@ -30,8 +33,16 @@ export default function DiscussionPage() {
   const fetchPost = async () => {
     try {
       setIsLoading(true);
-      const response = await postService.getPostById(postId);
+      const [response, similar] = await Promise.all([
+        postService.getPostById(postId),
+        similarPosts === null
+          ? feedService
+              .getSimilarPosts(postId, 3)
+              .catch(() => ({ posts: [] }))
+          : null,
+      ]);
       setPost(response.post);
+      if (similar) setSimilarPosts(similar.posts || []);
       setError(null);
     } catch (err) {
       setError(err.message || "Failed to load post");
@@ -92,5 +103,11 @@ export default function DiscussionPage() {
     );
   }
 
-  return <DiscussionLayout post={post} onPostUpdate={handlePostUpdate} />;
+  return (
+    <DiscussionLayout
+      post={post}
+      similarPosts={similarPosts}
+      onPostUpdate={handlePostUpdate}
+    />
+  );
 }

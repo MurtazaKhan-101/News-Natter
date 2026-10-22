@@ -1,5 +1,13 @@
 const mongoose = require("mongoose");
 
+const CATEGORIES = [
+  "politics",
+  "business",
+  "entertainment",
+  "lifestyle",
+  "technology",
+];
+
 const userEngagementSchema = new mongoose.Schema(
   {
     user: {
@@ -14,13 +22,7 @@ const userEngagementSchema = new mongoose.Schema(
       {
         category: {
           type: String,
-          enum: [
-            "politics",
-            "business",
-            "entertainment",
-            "lifestyle",
-            "technology",
-          ],
+          enum: CATEGORIES,
         },
         interactions: {
           type: Number,
@@ -121,6 +123,15 @@ const userEngagementSchema = new mongoose.Schema(
 userEngagementSchema.index({ user: 1, "categoryEngagement.category": 1 });
 userEngagementSchema.index({ "viewedPosts.post": 1 });
 userEngagementSchema.index({ "likedPosts.post": 1 });
+
+// Drop legacy/unknown categories (e.g. "community") already stored in old docs
+// or coming from old posts; otherwise every save for that user fails validation.
+userEngagementSchema.pre("validate", function (next) {
+  this.categoryEngagement = this.categoryEngagement.filter((ce) =>
+    CATEGORIES.includes(ce.category),
+  );
+  next();
+});
 
 // Static method to update category engagement
 userEngagementSchema.statics.updateCategoryEngagement = async function (

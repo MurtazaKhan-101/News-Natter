@@ -272,7 +272,7 @@ export const PostView = ({ post, onUpdate, isDiscussionView = false }) => {
             <span className="sm:hidden">{formatNumber(likeCount)}</span>
           </button>
 
-          {/* <div className="flex items-center gap-1 md:gap-2 px-3 md:px-4 py-2 text-gray-600 dark:text-gray-400">
+          <div className="flex items-center gap-1 md:gap-2 px-3 md:px-4 py-2 text-gray-600 dark:text-gray-400">
             <svg
               className="w-4 h-4 md:w-5 md:h-5"
               fill="none"
@@ -289,13 +289,13 @@ export const PostView = ({ post, onUpdate, isDiscussionView = false }) => {
             <span className="hidden sm:inline">
               {formatNumber(getTotalCommentCount(post.comments))}{" "}
               {getTotalCommentCount(post.comments) === 1
-                ? "Comment"
-                : "Comments"}
+                ? "Quick Take"
+                : "Quick Takes"}
             </span>
             <span className="sm:hidden">
               {formatNumber(getTotalCommentCount(post.comments))}
             </span>
-          </div> */}
+          </div>
 
           <button
             onClick={() => router.push(`/chat/${post._id}`)}

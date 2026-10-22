@@ -63,8 +63,8 @@ const validateComment = [
     .trim()
     .notEmpty()
     .withMessage("Comment is required")
-    .isLength({ max: 1000 })
-    .withMessage("Comment must be 1000 characters or less"),
+    .custom((value) => value.split(/\s+/).length <= 25)
+    .withMessage("Quick Take must be 25 words or less"),
 
   (req, res, next) => {
     const errors = validationResult(req);

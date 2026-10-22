@@ -3,7 +3,12 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { postService } from "../../lib/posts";
-import { Button, UpgradeBanner } from "../ui";
+import { Button } from "../ui";
+import {
+  QUICK_TAKE_MAX_WORDS,
+  countWords,
+  exceedsQuickTakeLimit,
+} from "../../lib/quickTake";
 import { CommentThread } from "../posts/CommentThread";
 import { SendHorizontal } from "lucide-react";
 import {
@@ -28,25 +33,12 @@ export const DiscussionPanel = ({
   // Track view duration for this post
   usePostViewTracking(post?._id, true);
 
-  // Check if user is premium
-  const isPremium = user?.isPremium || false;
-  const adminUser = user?.role === "admin";
-  const hasPremiumAccess = isPremium || adminUser;
-
-  const isInitialMount = useRef(true);
-
   useEffect(() => {
     setLocalComments(comments || []);
   }, [comments]);
 
-  useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      return;
-    }
-    scrollToBottom();
-  }, [localComments]);
-
+  // Only scroll after the user posts; scrolling on every comments change
+  // made the mobile page jump down on load.
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -86,6 +78,7 @@ export const DiscussionPanel = ({
       const updatedComments = [...localComments, response.comment];
       setLocalComments(updatedComments);
       onCommentsUpdate(updatedComments);
+      setTimeout(scrollToBottom, 0);
 
       // Reset textarea height
       if (textareaRef.current) {
@@ -127,8 +120,8 @@ export const DiscussionPanel = ({
   const handleInputChange = (e) => {
     const value = e.target.value;
 
-    // Prevent typing beyond 1000 characters
-    if (value.length > 1000) {
+    // Prevent typing beyond the Quick Take word limit
+    if (exceedsQuickTakeLimit(value)) {
       return;
     }
 
@@ -160,12 +153,12 @@ export const DiscussionPanel = ({
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 bg-green-500 rounded-full"></div>
           <div>
-            <h2 className="font-semibold text-black">Discussion</h2>
+            <h2 className="font-semibold text-black">Quick Takes</h2>
             <p className="text-sm text-gray-700">
               {getTotalCommentCount(localComments)}{" "}
               {getTotalCommentCount(localComments) === 1
-                ? "message"
-                : "messages"}
+                ? "take"
+                : "takes"}
             </p>
           </div>
         </div>
@@ -174,7 +167,7 @@ export const DiscussionPanel = ({
       {/* Comment Input - Move to top for mobile */}
       {isAuthenticated && isMobile && (
         <div className="px-6 py-4 border-b border-gray-800 bg-white">
-          {hasPremiumAccess ? (
+          {
             <form onSubmit={handleComment} className="space-y-3">
               <div className="relative">
                 <textarea
@@ -182,39 +175,25 @@ export const DiscussionPanel = ({
                   value={newComment}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
-                  placeholder="Write a comment..."
-                  maxLength={1000}
+                  placeholder="Share your take in 25 words..."
                   className="w-full px-4 py-3 border border-gray-700 rounded-lg resize-none text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 overflow-hidden"
                   rows={1}
                   style={{ minHeight: "44px", maxHeight: "120px" }}
                 />
 
-                {/* Character count indicator */}
+                {/* Word count indicator */}
                 {newComment.length > 0 && (
-                  <div className="absolute bottom-5 right-2 text-xs text-gray-500">
-                    {newComment.length}/1000
+                  <div
+                    className={`absolute bottom-5 right-2 text-xs ${
+                      countWords(newComment) >= QUICK_TAKE_MAX_WORDS
+                        ? "text-red-500"
+                        : "text-gray-500"
+                    }`}
+                  >
+                    {countWords(newComment)}/{QUICK_TAKE_MAX_WORDS}
                   </div>
                 )}
               </div>
-
-              {/* Character Limit Warning */}
-              {newComment.length > 900 && (
-                <div className="mt-2 text-right">
-                  <span
-                    className={`text-xs font-medium ${
-                      newComment.length >= 1000
-                        ? "text-red-500"
-                        : newComment.length > 950
-                        ? "text-orange-500"
-                        : "text-yellow-500"
-                    }`}
-                  >
-                    {newComment.length >= 1000
-                      ? "Character limit reached"
-                      : `${1000 - newComment.length} characters remaining`}
-                  </span>
-                </div>
-              )}
 
               <div className="flex justify-end items-center">
                 <Button
@@ -226,9 +205,7 @@ export const DiscussionPanel = ({
                 </Button>
               </div>
             </form>
-          ) : (
-            <UpgradeBanner feature="comment" compact />
-          )}
+          }
         </div>
       )}
 
@@ -264,10 +241,10 @@ export const DiscussionPanel = ({
               </svg>
             </div>
             <h3 className="text-lg font-medium text-black mb-2">
-              Start the conversation
+              No Quick Takes yet
             </h3>
             <p className="text-gray-600">
-              Be the first to share your thoughts on this post
+              Be the first to share your take in 25 words
             </p>
           </div>
         ) : (
@@ -294,7 +271,7 @@ export const DiscussionPanel = ({
       {/* Comment Input - Bottom for desktop only */}
       {isAuthenticated && !isMobile && (
         <div className="px-6 py-4 border bg-white">
-          {hasPremiumAccess ? (
+          {
             <form onSubmit={handleComment} className="space-y-3">
               <div className="flex gap-3 mt-4">
                 <div className="flex-1 relative">
@@ -303,17 +280,22 @@ export const DiscussionPanel = ({
                     value={newComment}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
-                    placeholder="Type your message..."
-                    maxLength={1000}
+                    placeholder="Share your take in 25 words..."
                     className="w-full scrollbar-hide p-3 border border-gray-700 rounded-lg resize-none text-black placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     rows={1}
                     style={{ minHeight: "44px", maxHeight: "120px" }}
                   />
 
-                  {/* Character count indicator */}
+                  {/* Word count indicator */}
                   {newComment.length > 0 && (
-                    <div className="absolute bottom-5 right-2 text-xs text-gray-500">
-                      {newComment.length}/1000
+                    <div
+                      className={`absolute bottom-5 right-2 text-xs ${
+                        countWords(newComment) >= QUICK_TAKE_MAX_WORDS
+                          ? "text-red-500"
+                          : "text-gray-500"
+                      }`}
+                    >
+                      {countWords(newComment)}/{QUICK_TAKE_MAX_WORDS}
                     </div>
                   )}
                 </div>
@@ -330,28 +312,8 @@ export const DiscussionPanel = ({
                 </Button>
               </div>
 
-              {/* Character Limit Warning for Desktop */}
-              {newComment.length > 900 && (
-                <div className="text-right">
-                  <span
-                    className={`text-xs font-medium ${
-                      newComment.length >= 1000
-                        ? "text-red-500"
-                        : newComment.length > 950
-                        ? "text-orange-500"
-                        : "text-yellow-500"
-                    }`}
-                  >
-                    {newComment.length >= 1000
-                      ? "Character limit reached"
-                      : `${1000 - newComment.length} characters remaining`}
-                  </span>
-                </div>
-              )}
             </form>
-          ) : (
-            <UpgradeBanner feature="comment" compact />
-          )}
+          }
         </div>
       )}
 
